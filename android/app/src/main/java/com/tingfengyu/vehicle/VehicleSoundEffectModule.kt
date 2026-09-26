@@ -2,6 +2,7 @@ package com.tingfengyu.vehicle
 
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
+import android.media.audiofx.PresetReverb
 import android.media.audiofx.Virtualizer
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -23,6 +24,7 @@ class VehicleSoundEffectModule(context: ReactApplicationContext) : ReactContextB
     private var equalizer: Equalizer? = null
     private var virtualizer: Virtualizer? = null
     private var bassBoost: BassBoost? = null
+    private var reverb: PresetReverb? = null
 
     override fun getName(): String = "NativeSoundEffect"
 
@@ -31,6 +33,139 @@ class VehicleSoundEffectModule(context: ReactApplicationContext) : ReactContextB
     fun attachSession(session: Int) {
         sessionId = session
         releaseEffects()
+    }
+
+    /**
+     * 自动探测当前活跃的媒体播放会话并挂载音效（无需 JS 传入 session id）。
+     * 优先从 TrackPlayer（kotlinaudio）反射拿真实 audioSessionId；
+     * 失败时回退到 activePlaybackConfigurations 探测。
+     */
+    @ReactMethod
+    fun attachToActiveSession(promise: Promise) {
+        try {
+            var targetSession = resolveTrackPlayerSession()
+            if (targetSession == 0) {
+                targetSession = probeActiveConfigurations()
+            }
+            android.util.Log.d("TYF_SOUND", "targetSession=" + targetSession)
+            if (targetSession == 0) {
+                promise.reject("SESSION_NOT_FOUND", "未检测到活跃播放会话，请先播放一首歌后再开启音效")
+                return
+            }
+            sessionId = targetSession
+            releaseEffects()
+            promise.resolve(targetSession)
+        } catch (e: Exception) {
+            promise.reject("SESSION_ERROR", e.message)
+        }
+    }
+
+    /**
+     * 反射链路：MusicModule.musicService.player(BaseAudioPlayer).getExoPlayer().getAudioSessionId()
+     * TrackPlayer 4.x（kotlinaudio v2.1.0）私有字段，运行时反射获取。
+     */
+    private fun resolveTrackPlayerSession(): Int {
+        return try {
+            val musicCls = Class.forName("com.doublesymmetry.trackplayer.module.MusicModule")
+            // 反射调用 ReactApplicationContext.getNativeModule(Class)（避开 RN 版本类型差异）
+            val getNm = reactContext.javaClass.methods.firstOrNull {
+                it.name == "getNativeModule" && it.parameterCount == 1
+            } ?: return 0
+            val musicModule = getNm.invoke(reactContext, musicCls) ?: return 0
+            val fService = musicModule.javaClass.getDeclaredField("musicService")
+            fService.isAccessible = true
+            val service = fService.get(musicModule) ?: return 0
+            val fPlayer = service.javaClass.getDeclaredField("player")
+            fPlayer.isAccessible = true
+            val player = fPlayer.get(service) ?: return 0
+            val baseCls = Class.forName("com.doublesymmetry.kotlinaudio.players.BaseAudioPlayer")
+            val mGetExo = baseCls.getDeclaredMethod("getExoPlayer")
+            mGetExo.isAccessible = true
+            val exo = mGetExo.invoke(player) ?: return 0
+            val mSession = exo.javaClass.methods.firstOrNull { it.name == "getAudioSessionId" } ?: return 0
+            val sid = mSession.invoke(exo) as? Int ?: 0
+            android.util.Log.d("TYF_SOUND", "resolveTrackPlayerSession=" + sid)
+            sid
+        } catch (e: Exception) {
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause else e
+            android.util.Log.d("TYF_SOUND", "resolveTrackPlayerSession err=" + e + " cause=" + cause)
+            0
+        }
+    }
+
+    /** 回退探测：系统活跃播放配置（部分 ROM 会隐藏 sessionId，故仅作兜底） */
+    private fun probeActiveConfigurations(): Int {
+        var targetSession = 0
+        try {
+            val audioManager = reactContext.getSystemService(
+                android.content.Context.AUDIO_SERVICE
+            ) as? android.media.AudioManager
+            if (audioManager != null && android.os.Build.VERSION.SDK_INT >= 26) {
+                val configs = audioManager.activePlaybackConfigurations
+                android.util.Log.d("TYF_SOUND", "probe configs.size=" + configs.size)
+                for (c in configs) {
+                    val usage = c.audioAttributes?.usage
+                    val sid = getSessionIdOf(c)
+                    android.util.Log.d("TYF_SOUND", "cfg usage=" + usage + " sid=" + sid)
+                    if (sid > 0 &&
+                        usage == android.media.AudioAttributes.USAGE_MEDIA
+                    ) {
+                        targetSession = sid
+                        break
+                    }
+                }
+                if (targetSession == 0 && configs.isNotEmpty()) {
+                    targetSession = getSessionIdOf(configs[0])
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("TYF_SOUND", "probe err=" + e)
+        }
+        return targetSession
+    }
+
+    /** 查询 EQ 频段数量与中心频率（用于渲染滑块 UI） */
+    @ReactMethod
+    fun getBandInfo(promise: Promise) {
+        try {
+            val eq = ensureEqualizer() ?: run {
+                promise.reject("EQ_ERROR", "无音频会话")
+                return
+            }
+            val bands = eq.numberOfBands.toInt()
+            val range = eq.bandLevelRange
+            val map: WritableMap = Arguments.createMap()
+            map.putInt("bands", bands)
+            map.putInt("min", range[0].toInt())
+            map.putInt("max", range[1].toInt())
+            val freqs = Arguments.createArray()
+            for (i in 0 until bands) {
+                freqs.pushInt(eq.getCenterFreq(i.toShort()).toInt())
+            }
+            map.putArray("centerFreqs", freqs)
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("EQ_ERROR", e.message)
+        }
+    }
+
+    /** 查询当前各频段增益（mB），用于回显滑块 */
+    @ReactMethod
+    fun getBandLevels(promise: Promise) {
+        try {
+            val eq = ensureEqualizer() ?: run {
+                promise.reject("EQ_ERROR", "无音频会话")
+                return
+            }
+            val bands = eq.numberOfBands.toInt()
+            val arr = Arguments.createArray()
+            for (i in 0 until bands) {
+                arr.pushInt(eq.getBandLevel(i.toShort()).toInt())
+            }
+            promise.resolve(arr)
+        } catch (e: Exception) {
+            promise.reject("EQ_ERROR", e.message)
+        }
     }
 
     /** 查询系统支持的 EQ 频段范围 */
@@ -163,6 +298,31 @@ class VehicleSoundEffectModule(context: ReactApplicationContext) : ReactContextB
         }
     }
 
+    /** 音域回响（混响）："关闭"/"小房间"/"中房间"/"大房间"/"中厅"/"大厅"/"舞台" */
+    @ReactMethod
+    fun setReverb(preset: String) {
+        try {
+            val session = sessionId
+            if (session == 0) return
+            if (reverb == null) {
+                reverb = PresetReverb(0, session)
+            }
+            val r = reverb ?: return
+            val p: Short = when (preset) {
+                "小房间" -> PresetReverb.PRESET_SMALLROOM
+                "中房间" -> PresetReverb.PRESET_MEDIUMROOM
+                "大房间" -> PresetReverb.PRESET_LARGEROOM
+                "中厅" -> PresetReverb.PRESET_MEDIUMHALL
+                "大厅" -> PresetReverb.PRESET_LARGEHALL
+                "舞台" -> PresetReverb.PRESET_PLATE
+                else -> PresetReverb.PRESET_NONE
+            }
+            r.preset = p
+            r.enabled = p != PresetReverb.PRESET_NONE
+        } catch (_: Exception) {
+        }
+    }
+
     /** 复位所有音效 */
     @ReactMethod
     fun resetEffects() {
@@ -171,7 +331,31 @@ class VehicleSoundEffectModule(context: ReactApplicationContext) : ReactContextB
             equalizer?.enabled = false
             bassBoost?.enabled = false
             virtualizer?.enabled = false
+            reverb?.preset = PresetReverb.PRESET_NONE
+            reverb?.enabled = false
         } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * 获取 AudioPlaybackConfiguration 的真实播放会话 ID。
+     * 优先反射调用公共方法 getAudioSessionId()（API 28+，避免编译期 API 级别约束），
+     * 失败时回退读取 AOSP 标准私有字段 mSessionId（兼容国产 ROM 变异字段名）。
+     */
+    private fun getSessionIdOf(config: android.media.AudioPlaybackConfiguration): Int {
+        // 公共方法 getAudioSessionId()（API 28+）
+        try {
+            val method = config.javaClass.getMethod("getAudioSessionId")
+            return method.invoke(config) as Int
+        } catch (_: Exception) {
+        }
+        // 回退：私有字段 mSessionId
+        return try {
+            val field = config.javaClass.getDeclaredField("mSessionId")
+            field.isAccessible = true
+            field.getInt(config)
+        } catch (_: Exception) {
+            0
         }
     }
 
@@ -190,10 +374,12 @@ class VehicleSoundEffectModule(context: ReactApplicationContext) : ReactContextB
             equalizer?.release()
             virtualizer?.release()
             bassBoost?.release()
+            reverb?.release()
         } catch (_: Exception) {
         }
         equalizer = null
         virtualizer = null
         bassBoost = null
+        reverb = null
     }
 }

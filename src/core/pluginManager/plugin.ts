@@ -28,6 +28,7 @@ import { URL } from "react-native-url-polyfill";
 import * as webdav from "webdav";
 import { devLog, errorLog, trace } from "../../utils/log";
 import Network from "../../utils/network";
+import { getPlayUrl, setPlayUrl, removePlayUrl } from "@/utils/playUrlCache";
 import MediaCache from "../mediaCache";
 import _internalPluginMeta from "./meta";
 import { IPluginManager } from "@/types/core/pluginManager";
@@ -243,6 +244,21 @@ class PluginMethodsWrapper implements IPlugin.IPluginInstanceMethods {
                     mediaCache.userAgent ?? mediaCache.headers?.["user-agent"],
             };
         }
+        // 2.5 P1 播放提速：播放地址热缓存（跳过插件网络解析，实现秒开）
+        const hotCache = getPlayUrl(
+            musicItem.platform,
+            musicItem.id,
+            quality,
+            this.plugin.hash,
+        );
+        if (hotCache) {
+            trace("播放", "热缓存秒开");
+            return {
+                url: hotCache.url,
+                headers: hotCache.headers,
+                userAgent: hotCache.userAgent ?? hotCache.headers?.["user-agent"],
+            };
+        }
         // 3. 替代插件
         const alternativePlugin = Plugin.pluginManager?.getAlternativePlugin(this.plugin) as Plugin | null;
         const parserPlugin = alternativePlugin?.instance?.getMediaSource ? alternativePlugin : this.plugin;
@@ -308,6 +324,13 @@ class PluginMethodsWrapper implements IPlugin.IPluginInstanceMethods {
                 };
 
                 MediaCache.setMediaCache(realMusicItem);
+                // P1 播放提速：写入热缓存
+                setPlayUrl(musicItem.platform, musicItem.id, quality, {
+                    url,
+                    headers: result.headers,
+                    userAgent: result.userAgent,
+                    pluginHash: this.plugin.hash,
+                });
             }
             return result;
         } catch (e: any) {
@@ -315,6 +338,13 @@ class PluginMethodsWrapper implements IPlugin.IPluginInstanceMethods {
                 await delay(150);
                 return this.getMediaSource(musicItem, quality, --retryCount);
             }
+            // P1 播放提速：多源并发竞速兜底（同平台其他启用插件并发取地址，先到先用）
+            const fallback = await this.tryFallbackPlugins(musicItem, quality);
+            if (fallback?.url) {
+                trace("播放", "竞速兜底成功");
+                return fallback;
+            }
+            removePlayUrl(musicItem.platform, musicItem.id, quality);
             errorLog("获取真实源失败", e?.message);
             devLog("error", "获取真实源失败", e, e?.message);
             return null;
@@ -832,6 +862,51 @@ class PluginMethodsWrapper implements IPlugin.IPluginInstanceMethods {
 
         return result;
     }
+    /** P1 播放提速：多源并发竞速兜底
+     * 主插件解析失败后，并发尝试同平台的其他已启用插件，先到先用。
+     * 取最多 2 个候选，避免请求风暴。
+     */
+    private async tryFallbackPlugins(
+        musicItem: IMusic.IMusicItemBase,
+        quality: IMusic.IQualityKey,
+    ): Promise<IPlugin.IMediaSourceResult | null> {
+        const manager = Plugin.pluginManager;
+        if (!manager) {
+            return null;
+        }
+        const candidates = manager
+            .getSortedPluginsWithAbility("getMediaSource")
+            .filter(
+                p =>
+                    p.name === musicItem.platform &&
+                    p.hash !== this.plugin.hash &&
+                    p.state === PluginState.Mounted,
+            )
+            .slice(0, 2);
+        if (candidates.length === 0) {
+            return null;
+        }
+        const settled = await Promise.allSettled(
+            candidates.map(async p => {
+                try {
+                    return await p.methods.getMediaSource(
+                        musicItem,
+                        quality,
+                        0,
+                        true,
+                    );
+                } catch (_) {
+                    return null;
+                }
+            }),
+        );
+        const hit = settled.find(
+            (r): r is PromiseFulfilledResult<IPlugin.IMediaSourceResult> =>
+                r.status === "fulfilled" && !!r.value?.url,
+        );
+        return hit?.value ?? null;
+    }
+
 }
 
 //#region 插件类

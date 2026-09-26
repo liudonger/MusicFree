@@ -454,6 +454,12 @@ export default function BasicSetting() {
                             navigate("vehicle-sync", undefined);
                         },
                     },
+                    {
+                        title: "音效设置（EQ / 预设 / 重低音 / 环绕）",
+                        onPress() {
+                            navigate("sound-effect", undefined);
+                        },
+                    },
                 ] : []),
             ],
         },

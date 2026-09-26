@@ -1,4 +1,5 @@
 import Home from "@/pages/home";
+import Splash from "@/pages/splash";
 import MusicDetail from "@/pages/musicDetail";
 import TopList from "@/pages/topList";
 import TopListDetail from "@/pages/topListDetail";
@@ -18,6 +19,7 @@ import History from "@/pages/history";
 import SetCustomTheme from "@/pages/setCustomTheme";
 import Permissions from "@/pages/permissions";
 import VehicleSync from "@/pages/vehicleSync";
+import SoundEffectSetting from "@/pages/setting/settingTypes/soundEffect";
 import { ROUTE_PATH } from "@/core/router/index.ts";
 
 type ValueOf<T> = T[keyof T];
@@ -30,6 +32,10 @@ type IRoutes = {
 
 
 export const routes: Array<IRoutes> = [
+    {
+        path: ROUTE_PATH.SPLASH,
+        component: Splash,
+    },
     {
         path: ROUTE_PATH.HOME,
         component: Home,
@@ -109,5 +115,9 @@ export const routes: Array<IRoutes> = [
     {
         path: ROUTE_PATH.VEHICLE_SYNC,
         component: VehicleSync,
+    },
+    {
+        path: ROUTE_PATH.SOUND_EFFECT,
+        component: SoundEffectSetting,
     },
 ];

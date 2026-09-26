@@ -154,11 +154,16 @@ class PluginManager implements IPluginManager, IInjectable {
             this.setPlugins(allPlugins);
             // 异步初始化插件
 
-            delay(10_000, true).then(async () => {
+            // P1 播放提速：启动后立即预热已启用的插件（原为延迟 10s，现 300ms 后开始，
+            // 只预挂载启用中的插件，避免首次搜索/播放等待插件初始化）
+            delay(300, true).then(async () => {
                 for (let i = 0; i < allPlugins.length; ++i) {
                     const plugin = allPlugins[i];
 
-                    if (plugin.state === PluginState.Initializing) {
+                    if (
+                        plugin.state === PluginState.Initializing &&
+                        pluginMeta.isPluginEnabled(plugin.name)
+                    ) {
                         await plugin.ensureMounted();
                         this.updatePluginCache(plugin);
                     }

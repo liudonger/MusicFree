@@ -48,6 +48,12 @@ export const ROUTE_PATH = {
     PERMISSIONS: "permissions",
     /** 车载扫码同步（听风语） */
     VEHICLE_SYNC: "vehicle-sync",
+
+    /** 音效设置（听风语） */
+    SOUND_EFFECT: "sound-effect",
+
+    /** 品牌开屏页（听风语） */
+    SPLASH: "splash",
 } as const;
 
 type ValueOf<T> = T[keyof T];
@@ -105,6 +111,8 @@ interface RouterParams extends RouterParamsBase {
         sheetInfo: IMusic.IMusicSheetItemBase;
     };
     "vehicle-sync": undefined;
+    "sound-effect": undefined;
+    splash: undefined;
 }
 
 /** 路由参数Hook */

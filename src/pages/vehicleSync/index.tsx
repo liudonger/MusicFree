@@ -62,7 +62,7 @@ export default function VehicleSync() {
     const stop = useCallback(() => {
         stopSyncServer();
         setRunning(false);
-        Toast.info("同步服务已停止");
+        Toast.success("同步服务已停止");
     }, []);
 
     useEffect(() => {
@@ -106,7 +106,7 @@ export default function VehicleSync() {
             <AppBar
                 menu={[
                     {
-                        icon: running ? "stop-circle" : "play-circle",
+                        icon: running ? "pause-circle-outline" : "play-circle",
                         title: running ? "停止服务" : "启动服务",
                         onPress: () => {
                             running ? stop() : start();
@@ -127,7 +127,7 @@ export default function VehicleSync() {
                 <View
                     style={[
                         styles.qrWrap,
-                        { backgroundColor: colors.backgroundSecondary },
+                        { backgroundColor: colors.card },
                     ]}>
                     {address ? (
                         <QRCode
