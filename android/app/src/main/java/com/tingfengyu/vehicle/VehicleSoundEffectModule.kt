@@ -66,12 +66,26 @@ class VehicleSoundEffectModule(context: ReactApplicationContext) : ReactContextB
      */
     private fun resolveTrackPlayerSession(): Int {
         return try {
-            val musicCls = Class.forName("com.doublesymmetry.trackplayer.module.MusicModule")
-            // 反射调用 ReactApplicationContext.getNativeModule(Class)（避开 RN 版本类型差异）
-            val getNm = reactContext.javaClass.methods.firstOrNull {
-                it.name == "getNativeModule" && it.parameterCount == 1
+            // RN 0.76：getNativeModule(Class) 强制要求 @ReactModule 注解，track-player 的 MusicModule 无注解
+            // → 改为遍历 getNativeModules() 直接取实例（legacy 模块均在列表中）
+            val getNms = reactContext.javaClass.methods.firstOrNull {
+                it.name == "getNativeModules" && it.parameterCount == 0
             } ?: return 0
-            val musicModule = getNm.invoke(reactContext, musicCls) ?: return 0
+            val modules = getNms.invoke(reactContext) as? Iterable<*> ?: return 0
+            var musicModule: Any? = null
+            for (m in modules) {
+                val clsName = m?.javaClass?.name ?: continue
+                if (clsName == "com.doublesymmetry.trackplayer.module.MusicModule" ||
+                    clsName.endsWith(".MusicModule")
+                ) {
+                    musicModule = m
+                    break
+                }
+            }
+            if (musicModule == null) {
+                android.util.Log.d("TYF_SOUND", "MusicModule not found in getNativeModules")
+                return 0
+            }
             val fService = musicModule.javaClass.getDeclaredField("musicService")
             fService.isAccessible = true
             val service = fService.get(musicModule) ?: return 0
